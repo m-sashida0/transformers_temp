@@ -371,14 +371,21 @@ class Gemma3RotaryEmbedding(Gemma2RotaryEmbedding):
 
 # Weird way to inherit but otherwise the sliding window gets defined first and can't access `is_sliding`
 class Gemma3Attention(Gemma2Attention):
-    def __init__(self, config: Gemma3TextConfig, layer_idx: int):
+    def __init__(self, config: Gemma3TextConfig, layer_idx: int,
+        fix_layer: Optional[List[int]] = None,     # 追加
+        fix_head: Optional[List[int]] = None,       # 追加
+        fix_temperature: Optional[float] = None,            # 追加: 温度パラメータ
+    ):
         self.is_sliding = bool((layer_idx + 1) % config.sliding_window_pattern)
 
-        super().__init__()
+        super().__init__(config, layer_idx)
         self.sliding_window = config.sliding_window if self.is_sliding else None
 
         self.q_norm = Gemma3RMSNorm(dim=config.head_dim, eps=config.rms_norm_eps)
         self.k_norm = Gemma3RMSNorm(dim=config.head_dim, eps=config.rms_norm_eps)
+        self.fix_layer = fix_layer
+        self.fix_head = fix_head
+        self.fix_temperature = fix_temperature
 
     def forward(
         self,
@@ -453,7 +460,8 @@ class Gemma3DecoderLayer(nn.Module):
         self.config = config
         self.hidden_size = config.hidden_size
         self.layer_idx = layer_idx
-        self.self_attn = Gemma3Attention(config=config, layer_idx=layer_idx)
+        self.self_attn = Gemma3Attention(config=config, layer_idx=layer_idx, 
+            fix_layer=config.fix_layer, fix_head=config.fix_head, fix_temperature=config.fix_temperature)
         self.mlp = Gemma3MLP(config)
         self.input_layernorm = Gemma3RMSNorm(self.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = Gemma3RMSNorm(self.hidden_size, eps=config.rms_norm_eps)

@@ -20,7 +20,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from functools import partial
-from typing import Callable, Optional, Tuple, Union
+from typing import Callable, Optional, Tuple, Union, List
 
 import torch
 import torch.nn as nn
@@ -184,7 +184,11 @@ def eager_attention_forward(
 class Gemma2Attention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
-    def __init__(self, config: Gemma2Config, layer_idx: int):
+    def __init__(self, config: Gemma2Config, layer_idx: int,
+        fix_layer: Optional[List[int]] = None,     # 追加
+        fix_head: Optional[List[int]] = None,       # 追加
+        fix_temperature: Optional[float] = None,            # 追加: 温度パラメータ
+    ):
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
@@ -193,6 +197,9 @@ class Gemma2Attention(nn.Module):
         self.scaling = config.query_pre_attn_scalar**-0.5
         self.attention_dropout = self.config.attention_dropout
         self.is_causal = True
+        self.fix_layer = fix_layer
+        self.fix_head = fix_head
+        self.fix_temperature = fix_temperature
 
         self.q_proj = nn.Linear(
             config.hidden_size, config.num_attention_heads * self.head_dim, bias=config.attention_bias
@@ -277,7 +284,8 @@ class Gemma2DecoderLayer(nn.Module):
         self.hidden_size = config.hidden_size
         self.config = config
         self.is_sliding = not bool(layer_idx % 2)
-        self.self_attn = Gemma2Attention(config=config, layer_idx=layer_idx)
+        self.self_attn = Gemma2Attention(config=config, layer_idx=layer_idx, 
+            fix_layer=config.fix_layer, fix_head=config.fix_head, fix_temperature=config.fix_temperature)
         self.mlp = Gemma2MLP(config)
         self.input_layernorm = Gemma2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = Gemma2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)

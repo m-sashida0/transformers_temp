@@ -23,7 +23,7 @@ import copy
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union, List
 
 import torch
 import torch.nn as nn
@@ -259,6 +259,22 @@ def eager_attention_forward(
     # upcast attention to fp32
     attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
     attn_weights = nn.functional.dropout(attn_weights, p=dropout, training=module.training)
+
+    if getattr(module, "fix_layer", None) is not None and module.layer_idx is not None:
+        for fix_layer, fix_head in zip(module.fix_layer, module.fix_head):
+            if module.layer_idx == fix_layer:
+                # 温度スケーリング or 均一三角分布に置き換え
+                bsz, n_heads, tgt_len, src_len = attn_weights.shape
+                if module.fix_temperature is not None:
+                    # module.fix_temperature はリストで対応させている前提
+                    idx = module.fix_layer.index(fix_layer)
+                    attn_weights[:, fix_head, :, :] /= module.fix_temperature[idx]
+                else:
+                    # 下三角ユニフォーム分布に置き換え
+                    tri = torch.tril(torch.ones((tgt_len, src_len), device=attn_weights.device))
+                    uni = tri / tri.sum(dim=-1, keepdim=True)
+                    attn_weights[:, fix_head, :, :] = uni.unsqueeze(0).expand(bsz, tgt_len, src_len)
+
     attn_output = torch.matmul(attn_weights, value_states)
     attn_output = attn_output.transpose(1, 2).contiguous()
     return attn_output, attn_weights
@@ -267,7 +283,11 @@ def eager_attention_forward(
 class Gemma3Attention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
-    def __init__(self, config: Gemma3TextConfig, layer_idx: int):
+    def __init__(self, config: Gemma3TextConfig, layer_idx: int,
+        fix_layer: Optional[List[int]] = None,     # 追加
+        fix_head: Optional[List[int]] = None,       # 追加
+        fix_temperature: Optional[float] = None,            # 追加: 温度パラメータ
+    ):
         super().__init__()
         self.is_sliding = bool((layer_idx + 1) % config.sliding_window_pattern)
         self.config = config
@@ -277,6 +297,9 @@ class Gemma3Attention(nn.Module):
         self.scaling = config.query_pre_attn_scalar**-0.5
         self.attention_dropout = self.config.attention_dropout
         self.is_causal = True
+        self.fix_layer = fix_layer
+        self.fix_head = fix_head
+        self.fix_temperature = fix_temperature
 
         self.q_proj = nn.Linear(
             config.hidden_size, config.num_attention_heads * self.head_dim, bias=config.attention_bias
@@ -369,7 +392,8 @@ class Gemma3DecoderLayer(nn.Module):
         self.config = config
         self.hidden_size = config.hidden_size
         self.layer_idx = layer_idx
-        self.self_attn = Gemma3Attention(config=config, layer_idx=layer_idx)
+        self.self_attn = Gemma3Attention(config=config, layer_idx=layer_idx, 
+            fix_layer=config.fix_layer, fix_head=config.fix_head, fix_temperature=config.fix_temperature)
         self.mlp = Gemma3MLP(config)
         self.input_layernorm = Gemma3RMSNorm(self.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = Gemma3RMSNorm(self.hidden_size, eps=config.rms_norm_eps)
